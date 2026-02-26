@@ -14,16 +14,28 @@ export default async function handler(req, res) {
 
   const finalPrompt = prompt + (json ? "\n\nReturn ONLY valid JSON. No markdown, no backticks. Raw JSON only." : "");
 
-  // Try models in order until one works
-  const models = [
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-001",
-    "gemini-pro",
-  ];
+  // First: check which models are available for this key
+  const listRes = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_KEY}`
+  );
+  const listData = await listRes.json();
+  
+  if (!listRes.ok) {
+    return res.status(500).json({error: "Key invalid: " + (listData.error?.message || "unknown")});
+  }
 
-  for (const model of models) {
+  // Get models that support generateContent
+  const available = (listData.models || [])
+    .filter(m => m.supportedGenerationMethods?.includes("generateContent"))
+    .map(m => m.name.replace("models/", ""));
+
+  console.log("Available models:", available.join(", "));
+
+  // Prefer flash models
+  const preferred = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash", "gemini-1.5-pro"];
+  const toTry = [...preferred.filter(m => available.includes(m)), ...available.filter(m => !preferred.includes(m))];
+
+  for (const model of toTry.slice(0, 3)) {
     try {
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
@@ -36,25 +48,14 @@ export default async function handler(req, res) {
           })
         }
       );
-
       const d = await r.json();
-
-      if (!r.ok || d.error) {
-        console.log(`Model ${model} failed:`, d.error?.message);
-        continue; // try next model
-      }
-
+      if (!r.ok || d.error) { console.log(`${model} failed:`, d.error?.message); continue; }
       const text = d.candidates?.[0]?.content?.parts?.[0]?.text || null;
       if (!text) continue;
-
-      console.log(`Model ${model} succeeded`);
+      console.log(`Success with ${model}`);
       return res.status(200).json({ok: true, text, model});
-
-    } catch(e) {
-      console.log(`Model ${model} exception:`, e.message);
-      continue;
-    }
+    } catch(e) { continue; }
   }
 
-  res.status(500).json({error:"All models failed. Check API key quota."});
+  res.status(500).json({error: "All models failed", available});
 }
