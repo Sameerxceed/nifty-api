@@ -14,28 +14,47 @@ export default async function handler(req, res) {
 
   const finalPrompt = prompt + (json ? "\n\nReturn ONLY valid JSON. No markdown, no backticks. Raw JSON only." : "");
 
-  try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-001:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          contents: [{parts: [{text: finalPrompt}]}],
-          generationConfig: {temperature: 0.3, maxOutputTokens: 2000}
-        })
+  // Try models in order until one works
+  const models = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-001",
+    "gemini-pro",
+  ];
+
+  for (const model of models) {
+    try {
+      const r = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+        {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            contents: [{parts: [{text: finalPrompt}]}],
+            generationConfig: {temperature: 0.3, maxOutputTokens: 2000}
+          })
+        }
+      );
+
+      const d = await r.json();
+
+      if (!r.ok || d.error) {
+        console.log(`Model ${model} failed:`, d.error?.message);
+        continue; // try next model
       }
-    );
 
-    const d = await r.json();
-    if (!r.ok || d.error) {
-      return res.status(r.status).json({error: d.error?.message || "Gemini error"});
+      const text = d.candidates?.[0]?.content?.parts?.[0]?.text || null;
+      if (!text) continue;
+
+      console.log(`Model ${model} succeeded`);
+      return res.status(200).json({ok: true, text, model});
+
+    } catch(e) {
+      console.log(`Model ${model} exception:`, e.message);
+      continue;
     }
-
-    const text = d.candidates?.[0]?.content?.parts?.[0]?.text || null;
-    res.status(200).json({ok: true, text});
-
-  } catch(e) {
-    res.status(500).json({error: e.message});
   }
+
+  res.status(500).json({error:"All models failed. Check API key quota."});
 }
